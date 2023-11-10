@@ -1,0 +1,101 @@
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Observable;
+import java.util.Observer;
+import java.util.concurrent.*;
+
+class CharacterObservable extends Observable {
+    private List<Character> capitalCharacters = new ArrayList<>();
+
+    public void addCapitalCharacter(Character capitalChar) {
+        capitalCharacters.add(capitalChar);
+    }
+
+    public void notifyObservers(char updatedChar) {
+        if (capitalCharacters.contains(updatedChar)) {
+            setChanged();
+            super.notifyObservers(updatedChar);
+        }
+    }
+}
+
+class CharacterObserver implements Observer {
+    private List<Character> capitalCharactersReceived = new ArrayList<>();
+    private Runnable onCompleteCallback;
+
+    @Override
+    public void update(Observable o, Object arg) {
+        if (arg instanceof Character) {
+            char updatedChar = (char) arg;
+            capitalCharactersReceived.add(updatedChar);
+            System.out.println("Received capital character: " + updatedChar);
+
+            if (capitalCharactersReceived.size() == capitalCharacters.size() && onCompleteCallback != null) {
+                onCompleteCallback.run();
+            }
+        }
+    }
+
+    public List<Character> getCapitalCharactersReceived() {
+        return capitalCharactersReceived;
+    }
+
+    public void setOnCompleteCallback(Runnable onCompleteCallback) {
+        this.onCompleteCallback = onCompleteCallback;
+    }
+}
+
+class CharacterProcessor {
+    public List<Character> processCharacters(List<Character> characters) {
+        CharacterObservable characterObservable = new CharacterObservable();
+        CharacterObserver characterObserver = new CharacterObserver();
+
+        characterObservable.addObserver(characterObserver);
+
+        for (Character character : characters) {
+            characterObservable.addCapitalCharacter(Character.toUpperCase(character));
+        }
+
+        CompletableFuture<List<Character>> future = new CompletableFuture<>();
+
+        characterObserver.setOnCompleteCallback(() -> {
+            characterObservable.deleteObserver(characterObserver); // Unsubscribe
+            future.complete(characterObserver.getCapitalCharactersReceived());
+        });
+
+        ScheduledExecutorService executorService = Executors.newSingleThreadScheduledExecutor();
+        executorService.schedule(() -> {
+            if (!future.isDone()) {
+                characterObservable.deleteObserver(characterObserver); // Unsubscribe on timeout
+                future.complete(characterObserver.getCapitalCharactersReceived());
+            }
+        }, 30, TimeUnit.SECONDS);
+
+        try {
+            return future.get();
+        } catch (InterruptedException | ExecutionException e) {
+            // Handle exceptions if needed
+            e.printStackTrace();
+            return characterObserver.getCapitalCharactersReceived();
+        } finally {
+            executorService.shutdown();
+        }
+    }
+}
+
+public class CharacterProcessorExample {
+    public static void main(String[] args) {
+        List<Character> charactersToProcess = List.of('a', 'b', 'c', 'd');
+
+        CharacterProcessor processor = new CharacterProcessor();
+        List<Character> result = processor.processCharacters(charactersToProcess);
+
+        System.out.println("Final result: " + result);
+    }
+}
+This code includes the CharacterObservable, CharacterObserver, and CharacterProcessor classes, along with a simple example in the CharacterProcessorExample class.
+
+
+
+
+
