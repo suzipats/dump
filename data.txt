@@ -1,101 +1,173 @@
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Observable;
-import java.util.Observer;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.stereotype.Component;
+
+import javax.annotation.PostConstruct;
+import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
-class CharacterObservable extends Observable {
-    private List<Character> capitalCharacters = new ArrayList<>();
+// Class representing the validation result
+class ValidationResult {
+    private final String message;
+    private final boolean isValid;
 
-    public void addCapitalCharacter(Character capitalChar) {
-        capitalCharacters.add(capitalChar);
+    public ValidationResult(String message, boolean isValid) {
+        this.message = message;
+        this.isValid = isValid;
     }
-
-    public void notifyObservers(char updatedChar) {
-        if (capitalCharacters.contains(updatedChar)) {
-            setChanged();
-            super.notifyObservers(updatedChar);
-        }
-    }
-}
-
-class CharacterObserver implements Observer {
-    private List<Character> capitalCharactersReceived = new ArrayList<>();
-    private Runnable onCompleteCallback;
 
     @Override
-    public void update(Observable o, Object arg) {
-        if (arg instanceof Character) {
-            char updatedChar = (char) arg;
-            capitalCharactersReceived.add(updatedChar);
-            System.out.println("Received capital character: " + updatedChar);
-
-            if (capitalCharactersReceived.size() == capitalCharacters.size() && onCompleteCallback != null) {
-                onCompleteCallback.run();
-            }
-        }
-    }
-
-    public List<Character> getCapitalCharactersReceived() {
-        return capitalCharactersReceived;
-    }
-
-    public void setOnCompleteCallback(Runnable onCompleteCallback) {
-        this.onCompleteCallback = onCompleteCallback;
+    public String toString() {
+        return "ValidationResult{message='" + message + "', isValid=" + isValid + '}';
     }
 }
 
-class CharacterProcessor {
-    public List<Character> processCharacters(List<Character> characters) {
-        CharacterObservable characterObservable = new CharacterObservable();
-        CharacterObserver characterObserver = new CharacterObserver();
+// Validator interface
+interface Validator {
+    ValidationResult validate();
+}
 
-        characterObservable.addObserver(characterObserver);
+// Spring-managed TaskNode class, representing validation tasks with dependencies
+@Component
+class TaskNode implements Validator {
+    private final String taskName;
+    private final List<TaskNode> dependencies;  // Dependencies for this task
 
-        for (Character character : characters) {
-            characterObservable.addCapitalCharacter(Character.toUpperCase(character));
+    public TaskNode(String taskName) {
+        this.taskName = taskName;
+        this.dependencies = new ArrayList<>();
+    }
+
+    public void addDependency(TaskNode dependency) {
+        dependencies.add(dependency);
+    }
+
+    public List<TaskNode> getDependencies() {
+        return dependencies;
+    }
+
+    @Override
+    public ValidationResult validate() {
+        try {
+            Thread.sleep(1000);  // Simulate task processing
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
+        return new ValidationResult(taskName + " validation completed", true);
+    }
 
-        CompletableFuture<List<Character>> future = new CompletableFuture<>();
+    @Override
+    public String toString() {
+        return taskName;
+    }
+}
 
-        characterObserver.setOnCompleteCallback(() -> {
-            characterObservable.deleteObserver(characterObserver); // Unsubscribe
-            future.complete(characterObserver.getCapitalCharactersReceived());
-        });
+// Main Spring Component that processes the validation tasks
+@Component
+class DependencyGraphValidationProcessor {
 
-        ScheduledExecutorService executorService = Executors.newSingleThreadScheduledExecutor();
-        executorService.schedule(() -> {
-            if (!future.isDone()) {
-                characterObservable.deleteObserver(characterObserver); // Unsubscribe on timeout
-                future.complete(characterObserver.getCapitalCharactersReceived());
-            }
-        }, 30, TimeUnit.SECONDS);
+    private Map<Integer, List<TaskNode>> tasksByLevel;  // Precomputed tasks by level
+
+    private final List<TaskNode> tasks;  // Injected tasks (spring beans)
+
+    @Autowired
+    public DependencyGraphValidationProcessor(List<TaskNode> tasks) {
+        this.tasks = tasks;
+    }
+
+    // This method is called after the bean is created to precompute the task levels
+    @PostConstruct
+    public void init() {
+        tasksByLevel = precomputeTaskLevels();
+    }
+
+    // Method to run the validation tasks at runtime
+    public void runValidationTasks() {
+        ExecutorService executor = Executors.newFixedThreadPool(4);
 
         try {
-            return future.get();
-        } catch (InterruptedException | ExecutionException e) {
-            // Handle exceptions if needed
-            e.printStackTrace();
-            return characterObserver.getCapitalCharactersReceived();
+            // Execute the precomputed task levels sequentially
+            for (int level = 0; level < tasks.size(); level++) {
+                List<TaskNode> currentLevelTasks = tasksByLevel.getOrDefault(level, Collections.emptyList());
+
+                // Execute tasks at the current level in parallel
+                List<Future<ValidationResult>> futures = currentLevelTasks.stream()
+                        .map(task -> executor.submit(task::validate))
+                        .collect(Collectors.toList());
+
+                // Wait for all tasks at this level to complete before moving to the next level
+                for (Future<ValidationResult> future : futures) {
+                    try {
+                        System.out.println(future.get());
+                    } catch (InterruptedException | ExecutionException e) {
+                        System.err.println("Error executing task: " + e.getMessage());
+                    }
+                }
+            }
         } finally {
-            executorService.shutdown();
+            executor.shutdown();
         }
     }
-}
 
-public class CharacterProcessorExample {
-    public static void main(String[] args) {
-        List<Character> charactersToProcess = List.of('a', 'b', 'c', 'd');
+    // Precompute task levels (Topological Sorting)
+    private Map<Integer, List<TaskNode>> precomputeTaskLevels() {
+        Map<TaskNode, Integer> indegree = new HashMap<>();
+        tasks.forEach(task -> indegree.put(task, 0));
 
-        CharacterProcessor processor = new CharacterProcessor();
-        List<Character> result = processor.processCharacters(charactersToProcess);
+        // Calculate in-degrees for all tasks
+        for (TaskNode task : tasks) {
+            for (TaskNode dep : task.getDependencies()) {
+                indegree.put(dep, indegree.get(dep) + 1);
+            }
+        }
 
-        System.out.println("Final result: " + result);
+        // Group tasks by dependency level (in-degree)
+        return tasks.stream().collect(Collectors.groupingBy(indegree::get));
     }
 }
-This code includes the CharacterObservable, CharacterObserver, and CharacterProcessor classes, along with a simple example in the CharacterProcessorExample class.
 
+// Spring Configuration to define TaskNode beans and set up dependencies
+@Configuration
+class AppConfig {
 
+    @Bean
+    public TaskNode taskA() {
+        return new TaskNode("Task A");
+    }
 
+    @Bean
+    public TaskNode taskB() {
+        return new TaskNode("Task B");
+    }
 
+    @Bean
+    public TaskNode taskC(TaskNode taskA) {
+        TaskNode taskC = new TaskNode("Task C");
+        taskC.addDependency(taskA);  // Task C depends on Task A
+        return taskC;
+    }
 
+    @Bean
+    public TaskNode taskD(TaskNode taskA, TaskNode taskB) {
+        TaskNode taskD = new TaskNode("Task D");
+        taskD.addDependency(taskA);  // Task D depends on Task A
+        taskD.addDependency(taskB);  // Task D depends on Task B
+        return taskD;
+    }
+}
+
+// Main Application
+public class SpringDependencyGraphApp {
+    public static void main(String[] args) {
+        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(AppConfig.class);
+
+        // Retrieve the validation processor and run the validation tasks
+        DependencyGraphValidationProcessor processor = context.getBean(DependencyGraphValidationProcessor.class);
+        processor.runValidationTasks();
+        
+        context.close();
+    }
+}
