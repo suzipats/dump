@@ -65,66 +65,47 @@ class TaskNode implements Validator {
     }
 }
 
-// Main Spring Component that processes the validation tasks
 @Component
 class DependencyGraphValidationProcessor {
 
     private Map<Integer, List<TaskNode>> tasksByLevel;  // Precomputed tasks by level
-
-    private final List<TaskNode> tasks;  // Injected tasks (spring beans)
+    private final List<TaskNode> tasks;  // Injected tasks (Spring beans)
 
     @Autowired
     public DependencyGraphValidationProcessor(List<TaskNode> tasks) {
         this.tasks = tasks;
     }
 
-    // This method is called after the bean is created to precompute the task levels
     @PostConstruct
     public void init() {
         tasksByLevel = precomputeTaskLevels();
     }
 
-    // Method to run the validation tasks at runtime
-    public void runValidationTasks() {
-        ExecutorService executor = Executors.newFixedThreadPool(4);
+    // Return the first failed ValidationResult or empty if all tasks succeed
+    public Optional<ValidationResult> runValidationTasks() {
+        for (List<TaskNode> tasksAtLevel : tasksByLevel.values()) {
+            Optional<ValidationResult> failedResult = tasksAtLevel.parallelStream()
+                    .map(TaskNode::validate)  // Run tasks in parallel
+                    .filter(result -> !result.isValid())  // Filter failed results
+                    .findFirst();  // Stop as soon as a failure is found
 
-        try {
-            // Execute the precomputed task levels sequentially
-            for (int level = 0; level < tasks.size(); level++) {
-                List<TaskNode> currentLevelTasks = tasksByLevel.getOrDefault(level, Collections.emptyList());
-
-                // Execute tasks at the current level in parallel
-                List<Future<ValidationResult>> futures = currentLevelTasks.stream()
-                        .map(task -> executor.submit(task::validate))
-                        .collect(Collectors.toList());
-
-                // Wait for all tasks at this level to complete before moving to the next level
-                for (Future<ValidationResult> future : futures) {
-                    try {
-                        System.out.println(future.get());
-                    } catch (InterruptedException | ExecutionException e) {
-                        System.err.println("Error executing task: " + e.getMessage());
-                    }
-                }
+            if (failedResult.isPresent()) {
+                return failedResult;  // Return the first failed result
             }
-        } finally {
-            executor.shutdown();
         }
+        return Optional.empty();  // Return empty if no failures
     }
 
-    // Precompute task levels (Topological Sorting)
     private Map<Integer, List<TaskNode>> precomputeTaskLevels() {
         Map<TaskNode, Integer> indegree = new HashMap<>();
         tasks.forEach(task -> indegree.put(task, 0));
 
-        // Calculate in-degrees for all tasks
         for (TaskNode task : tasks) {
             for (TaskNode dep : task.getDependencies()) {
                 indegree.put(dep, indegree.get(dep) + 1);
             }
         }
 
-        // Group tasks by dependency level (in-degree)
         return tasks.stream().collect(Collectors.groupingBy(indegree::get));
     }
 }
