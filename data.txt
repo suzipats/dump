@@ -1,223 +1,89 @@
+import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@ConfigurationProperties(prefix = "spring.datasource")
+public class MultipleDataSourceProperties {
+
+    private Map<String, DataSourceProperties> dataSources = new HashMap<>();
+
+    public Map<String, DataSourceProperties> getDataSources() {
+        return dataSources;
+    }
+
+    public void setDataSources(Map<String, DataSourceProperties> dataSources) {
+        this.dataSources = dataSources;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+mport com.zaxxer.hikari.HikariDataSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.stereotype.Component;
+import org.springframework.core.env.ConfigurableEnvironment;
 
-import javax.annotation.PostConstruct;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.stream.Collectors;
+import javax.sql.DataSource;
+import java.util.HashMap;
+import java.util.Map;
 
-// Class representing the validation result
-class ValidationResult {
-    private final String message;
-    private final boolean isValid;
-
-    public ValidationResult(String message, boolean isValid) {
-        this.message = message;
-        this.isValid = isValid;
-    }
-
-    @Override
-    public String toString() {
-        return "ValidationResult{message='" + message + "', isValid=" + isValid + '}';
-    }
-}
-
-// Validator interface
-interface Validator {
-    ValidationResult validate();
-}
-
-// Spring-managed TaskNode class, representing validation tasks with dependencies
-@Component
-class TaskNode implements Validator {
-    private final String taskName;
-    private final List<TaskNode> dependencies;  // Dependencies for this task
-
-    public TaskNode(String taskName) {
-        this.taskName = taskName;
-        this.dependencies = new ArrayList<>();
-    }
-
-    public void addDependency(TaskNode dependency) {
-        dependencies.add(dependency);
-    }
-
-    public List<TaskNode> getDependencies() {
-        return dependencies;
-    }
-
-    @Override
-    public ValidationResult validate() {
-        try {
-            Thread.sleep(1000);  // Simulate task processing
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        return new ValidationResult(taskName + " validation completed", true);
-    }
-
-    @Override
-    public String toString() {
-        return taskName;
-    }
-}
-
-@Component
-class DependencyGraphValidationProcessor {
-
-    private Map<Integer, List<TaskNode>> tasksByLevel;  // Precomputed tasks by level
-    private final List<TaskNode> tasks;  // Injected tasks (Spring beans)
+@Configuration
+@EnableConfigurationProperties(MultipleDataSourceProperties.class)
+public class DataSourceConfig {
 
     @Autowired
-    public DependencyGraphValidationProcessor(List<TaskNode> tasks) {
-        this.tasks = tasks;
-    }
+    private ConfigurableEnvironment environment;
 
-    @PostConstruct
-    public void init() {
-        tasksByLevel = precomputeTaskLevels();
-    }
+    @Bean
+    public Map<String, DataSource> dataSources(MultipleDataSourceProperties multipleProps) {
+        Map<String, DataSource> dataSourceMap = new HashMap<>();
 
-    // Return the first failed ValidationResult or empty if all tasks succeed
-    public Optional<ValidationResult> runValidationTasks() {
-        for (List<TaskNode> tasksAtLevel : tasksByLevel.values()) {
-            Optional<ValidationResult> failedResult = tasksAtLevel.parallelStream()
-                    .map(TaskNode::validate)  // Run tasks in parallel
-                    .filter(result -> !result.isValid())  // Filter failed results
-                    .findFirst();  // Stop as soon as a failure is found
+        multipleProps.getDataSources().forEach((name, props) -> {
+            // Create HikariDataSource from base props
+            HikariDataSource ds = props.initializeDataSourceBuilder()
+                                      .type(HikariDataSource.class)
+                                      .build();
 
-            if (failedResult.isPresent()) {
-                return failedResult;  // Return the first failed result
-            }
-        }
-        return Optional.empty();  // Return empty if no failures
-    }
+            // Bind Hikari-specific config
+            String prefix = "spring.datasource." + name + ".hikari";
+            Binder.get(environment).bind(prefix, Bindable.ofInstance(ds));
 
-NEW>............
- // Runs validation tasks level by level (parallel within a level)
-    public void runValidationTasks() {
-        Map<Integer, List<TaskNode>> taskLevels = precomputeTaskLevels();
-        ExecutorService executor = Executors.newFixedThreadPool(4); // Parallelism with 4 threads
+            dataSourceMap.put(name, ds);
+        });
 
-        for (Map.Entry<Integer, List<TaskNode>> entry : taskLevels.entrySet()) {
-            System.out.println("Processing tasks at Level " + entry.getKey());
-
-            // Run tasks in parallel within the same level
-            List<TaskNode> tasksAtLevel = entry.getValue();
-            tasksAtLevel.parallelStream().forEach(task -> {
-                try {
-                    task.validate();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            });
-        }
-
-        // Shutdown the executor gracefully
-        executor.shutdown();
-        try {
-            if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
-                System.err.println("Executor did not terminate in the expected time.");
-            }
-        } catch (InterruptedException e) {
-            System.err.println("Executor was interrupted.");
-        }
-    }
-
-
- // Precomputes task levels correctly, ensuring dependent tasks are at higher levels
-    public Map<Integer, List<TaskNode>> precomputeTaskLevels() {
-        Map<TaskNode, Integer> indegree = new HashMap<>();
-        Map<TaskNode, Integer> taskLevelMap = new HashMap<>();
-        Map<TaskNode, List<TaskNode>> taskDependencyMap = new HashMap<>();
-
-        // Initialize indegree map and level map
-        for (TaskNode task : tasks) {
-            indegree.put(task, 0);
-            taskLevelMap.put(task, 0);
-            taskDependencyMap.put(task, new ArrayList<>());
-        }
-
-        // Calculate indegree and build dependency map
-        for (TaskNode task : tasks) {
-            for (TaskNode dependency : task.getDependencies()) {
-                indegree.put(task, indegree.get(task) + 1);
-                taskDependencyMap.get(dependency).add(task);
-            }
-        }
-
-        // Queue to process tasks with indegree 0 (no unresolved dependencies)
-        Queue<TaskNode> queue = new LinkedList<>();
-        for (TaskNode task : tasks) {
-            if (indegree.get(task) == 0) {
-                queue.add(task);
-            }
-        }
-
-        // Map to store tasks by their levels
-        Map<Integer, List<TaskNode>> tasksByLevel = new TreeMap<>();
-
-        // Process tasks level by level using topological sorting
-        while (!queue.isEmpty()) {
-            TaskNode currentTask = queue.poll();
-            int currentLevel = taskLevelMap.get(currentTask);
-            tasksByLevel.computeIfAbsent(currentLevel, k -> new ArrayList<>()).add(currentTask);
-
-            for (TaskNode dependentTask : taskDependencyMap.get(currentTask)) {
-                indegree.put(dependentTask, indegree.get(dependentTask) - 1);
-                if (indegree.get(dependentTask) == 0) {
-                    taskLevelMap.put(dependentTask, Math.max(taskLevelMap.get(dependentTask), currentLevel + 1));
-                    queue.add(dependentTask);
-                }
-            }
-        }
-
-        return tasksByLevel;
+        return dataSourceMap;
     }
 }
 
-// Spring Configuration to define TaskNode beans and set up dependencies
-@Configuration
-class AppConfig {
 
-    @Bean
-    public TaskNode taskA() {
-        return new TaskNode("Task A");
-    }
 
-    @Bean
-    public TaskNode taskB() {
-        return new TaskNode("Task B");
-    }
 
-    @Bean
-    public TaskNode taskC(TaskNode taskA) {
-        TaskNode taskC = new TaskNode("Task C");
-        taskC.addDependency(taskA);  // Task C depends on Task A
-        return taskC;
-    }
 
-    @Bean
-    public TaskNode taskD(TaskNode taskA, TaskNode taskB) {
-        TaskNode taskD = new TaskNode("Task D");
-        taskD.addDependency(taskA);  // Task D depends on Task A
-        taskD.addDependency(taskB);  // Task D depends on Task B
-        return taskD;
-    }
-}
 
-// Main Application
-public class SpringDependencyGraphApp {
-    public static void main(String[] args) {
-        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(AppConfig.class);
 
-        // Retrieve the validation processor and run the validation tasks
-        DependencyGraphValidationProcessor processor = context.getBean(DependencyGraphValidationProcessor.class);
-        processor.runValidationTasks();
-        
-        context.close();
-    }
+
+
+
+
+
+@Autowired
+private Map<String, DataSource> dataSources;
+
+public void test() {
+    DataSource ds1 = dataSources.get("one");
+    DataSource ds2 = dataSources.get("two");
+    // Use these in JdbcTemplate, JPA, etc.
 }
