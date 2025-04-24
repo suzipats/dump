@@ -1,3 +1,109 @@
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.jdbc.DataSourceBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+
+import javax.sql.DataSource;
+import java.util.*;
+
+@Configuration
+public class DynamicDataSourceConfig {
+
+    private static final String PREFIX = "custom.datasources";
+
+    @Bean
+    public Map<String, DataSource> dataSources(Environment environment) throws Exception {
+        Binder binder = Binder.get(environment);
+        Map<String, Object> raw = binder.bind(PREFIX, Bindable.mapOf(String.class, Object.class)).orElse(Collections.emptyMap());
+
+        Map<String, DataSource> result = new HashMap<>();
+
+        for (String key : raw.keySet()) {
+            String prefix = PREFIX + "." + key;
+
+            // Bind the full property map for this datasource
+            Map<String, String> props = binder.bind(prefix, Bindable.mapOf(String.class, String.class)).orElseThrow();
+
+            String url = props.get("url");
+            String username = props.get("username");
+            String password = props.get("password");
+            String driver = props.get("driver-class-name");
+            String type = props.get("type"); // optional
+
+            Class<? extends DataSource> dsClass = type != null
+                    ? (Class<? extends DataSource>) Class.forName(type)
+                    : DataSourceBuilder.create().getClass().getMethod("build").getReturnType(); // fallback
+
+            // Build generic DataSource
+            DataSource ds = DataSourceBuilder.create()
+                    .url(url)
+                    .username(username)
+                    .password(password)
+                    .driverClassName(driver)
+                    .type(dsClass)
+                    .build();
+
+            // Rebind properties into the implementation-specific instance
+            binder.bind(prefix, Bindable.ofInstance(ds));
+
+            result.put(key, ds);
+        }
+
+        return result;
+    }
+}
+💡 What this does:
+Dynamically loads the right class for the DataSource type
+
+Builds using DataSourceBuilder
+
+Then uses Spring Boot’s Binder to bind all remaining properties into the instance, including:
+
+maximum-pool-size (Hikari)
+
+initialSize (Tomcat)
+
+defaultAutoCommit, etc.
+
+✅ No hardcoding ✅ Still uses standard Spring Boot property style ✅ Works with any connection pool on the classpath
+
+🚀 Optional improvement
+If type isn’t given, you can infer it from Spring Boot’s classpath preference. Here's how to get the default from EmbeddedDatabaseConnection or classpath:
+
+java
+Copy
+Edit
+private Class<? extends DataSource> detectDefaultDataSourceType() {
+    try {
+        Class.forName("com.zaxxer.hikari.HikariDataSource");
+        return (Class<? extends DataSource>) Class.forName("com.zaxxer.hikari.HikariDataSource");
+    } catch (ClassNotFoundException e) {
+        try {
+            Class.forName("org.apache.tomcat.jdbc.pool.DataSource");
+            return (Class<? extends DataSource>) Class.forName("org.apache.tomcat.jdbc.pool.DataSource");
+        } catch (ClassNotFoundException ex) {
+            // fallback to DBCP2 or throw
+        }
+    }
+    throw new IllegalStateException("No known DataSource implementation found on classpath");
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
