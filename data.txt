@@ -4,21 +4,56 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.util.HashMap;
 import java.util.Map;
 
-@ConfigurationProperties(prefix = "spring.datasource")
-public class MultipleDataSourceProperties {
+import com.zaxxer.hikari.HikariDataSource;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 
-    private Map<String, DataSourceProperties> dataSources = new HashMap<>();
+import javax.sql.DataSource;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
-    public Map<String, DataSourceProperties> getDataSources() {
-        return dataSources;
-    }
+@Configuration
+public class DataSourceConfig {
 
-    public void setDataSources(Map<String, DataSourceProperties> dataSources) {
-        this.dataSources = dataSources;
+    private static final String ROOT_PREFIX = "spring.datasource";
+
+    @Bean
+    public Map<String, DataSource> dataSources(Environment environment) {
+        Binder binder = Binder.get(environment);
+
+        // Get all child property names under spring.datasource.*
+        Set<String> dataSourceKeys = binder.bind(ROOT_PREFIX, Bindable.mapOf(String.class, Object.class))
+                                           .orElse(new HashMap<>())
+                                           .keySet();
+
+        Map<String, DataSource> result = new HashMap<>();
+
+        for (String key : dataSourceKeys) {
+            String prefix = ROOT_PREFIX + "." + key;
+
+            // Bind to DataSourceProperties
+            DataSourceProperties props = binder.bind(prefix, Bindable.of(DataSourceProperties.class))
+                                               .orElseThrow(() -> new IllegalArgumentException("Invalid config for: " + key));
+
+            // Build HikariDataSource
+            HikariDataSource ds = props.initializeDataSourceBuilder()
+                                       .type(HikariDataSource.class)
+                                       .build();
+
+            // Optionally bind Hikari-specific props
+            binder.bind(prefix + ".hikari", Bindable.ofInstance(ds));
+
+            result.put(key, ds);
+        }
+
+        return result;
     }
 }
-
-
 
 
 
