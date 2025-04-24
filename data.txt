@@ -79,6 +79,83 @@ public class DataSourceConfig {
 
 
 
+
+
+
+import com.zaxxer.hikari.HikariDataSource;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.ConfigurableEnvironment;
+
+import javax.sql.DataSource;
+import java.util.HashMap;
+import java.util.Map;
+
+@Configuration
+@EnableConfigurationProperties(DataSourceConfig.MultipleDataSourceProperties.class)
+public class DataSourceConfig {
+
+    private final ConfigurableEnvironment environment;
+
+    public DataSourceConfig(ConfigurableEnvironment environment) {
+        this.environment = environment;
+    }
+
+    @Bean
+    public Map<String, DataSource> dataSources(MultipleDataSourceProperties multipleProps) {
+        Map<String, DataSource> dataSourceMap = new HashMap<>();
+
+        multipleProps.getDataSources().forEach((name, props) -> {
+            // Create HikariDataSource from basic properties
+            HikariDataSource ds = props.initializeDataSourceBuilder()
+                                      .type(HikariDataSource.class)
+                                      .build();
+
+            // Bind Hikari-specific properties
+            String prefix = "spring.datasource." + name + ".hikari";
+            Binder.get(environment).bind(prefix, Bindable.ofInstance(ds));
+
+            dataSourceMap.put(name, ds);
+        });
+
+        return dataSourceMap;
+    }
+
+    @ConfigurationProperties(prefix = "spring.datasource")
+    public static class MultipleDataSourceProperties {
+
+        private Map<String, DataSourceProperties> dataSources = new HashMap<>();
+
+        public Map<String, DataSourceProperties> getDataSources() {
+            return dataSources;
+        }
+
+        public void setDataSources(Map<String, DataSourceProperties> dataSources) {
+            this.dataSources = dataSources;
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @Autowired
 private Map<String, DataSource> dataSources;
 
