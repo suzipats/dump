@@ -1,307 +1,86 @@
+import org.springframework.beans.factory.support.BeanDefinitionBuilder;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
+import org.springframework.beans.factory.support.BeanDefinitionRegistryPostProcessor;
+import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.context.properties.bind.Bindable;
-import org.springframework.boot.jdbc.DataSourceBuilder;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 
 import javax.sql.DataSource;
-import java.util.*;
+import java.util.Map;
 
 @Configuration
-public class DynamicDataSourceConfig {
+public class DynamicDataSourceRegistrar implements BeanDefinitionRegistryPostProcessor {
 
-    private static final String PREFIX = "custom.datasources";
+    private final Environment environment;
 
-    @Bean
-    public Map<String, DataSource> dataSources(Environment environment) throws Exception {
+    public DynamicDataSourceRegistrar(Environment environment) {
+        this.environment = environment;
+    }
+
+    @Override
+    public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
         Binder binder = Binder.get(environment);
-        Map<String, Object> raw = binder.bind(PREFIX, Bindable.mapOf(String.class, Object.class)).orElse(Collections.emptyMap());
+        String PREFIX = "custom.datasources";
 
-        Map<String, DataSource> result = new HashMap<>();
+        Map<String, Object> dataSources =
+                binder.bind(PREFIX, Bindable.mapOf(String.class, Object.class))
+                      .orElseThrow();
 
-        for (String key : raw.keySet()) {
-            String prefix = PREFIX + "." + key;
-
-            // Bind the full property map for this datasource
-            Map<String, String> props = binder.bind(prefix, Bindable.mapOf(String.class, String.class)).orElseThrow();
+        for (String key : dataSources.keySet()) {
+            String dsPrefix = PREFIX + "." + key;
+            Map<String, String> props = binder.bind(dsPrefix, Bindable.mapOf(String.class, String.class)).orElseThrow();
 
             String url = props.get("url");
             String username = props.get("username");
             String password = props.get("password");
-            String driver = props.get("driver-class-name");
-            String type = props.get("type"); // optional
+            String driverClassName = props.get("driver-class-name");
+            String type = props.get("type");
 
-            Class<? extends DataSource> dsClass = type != null
-                    ? (Class<? extends DataSource>) Class.forName(type)
-                    : DataSourceBuilder.create().getClass().getMethod("build").getReturnType(); // fallback
+            try {
+                Class<? extends DataSource> dsType = type != null
+                        ? (Class<? extends DataSource>) Class.forName(type)
+                        : detectDefaultDataSourceType();
 
-            // Build generic DataSource
-            DataSource ds = DataSourceBuilder.create()
-                    .url(url)
-                    .username(username)
-                    .password(password)
-                    .driverClassName(driver)
-                    .type(dsClass)
-                    .build();
+                DataSource ds = DataSourceBuilder.create()
+                        .url(url)
+                        .username(username)
+                        .password(password)
+                        .driverClassName(driverClassName)
+                        .type(dsType)
+                        .build();
 
-            // Rebind properties into the implementation-specific instance
-            binder.bind(prefix, Bindable.ofInstance(ds));
+                // Bind impl-specific properties
+                binder.bind(dsPrefix, Bindable.ofInstance(ds));
 
-            result.put(key, ds);
+                // Register bean definition with destroyMethod = "close"
+                BeanDefinitionBuilder beanDefBuilder = BeanDefinitionBuilder
+                        .genericBeanDefinition(ds.getClass(), () -> ds)
+                        .setDestroyMethodName("close");
+
+                registry.registerBeanDefinition("dataSource_" + key, beanDefBuilder.getBeanDefinition());
+
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to register datasource: " + key, e);
+            }
         }
-
-        return result;
     }
-}
-💡 What this does:
-Dynamically loads the right class for the DataSource type
 
-Builds using DataSourceBuilder
+    @Override
+    public void postProcessBeanFactory(org.springframework.beans.factory.config.ConfigurableListableBeanFactory ignored) {
+        // no-op
+    }
 
-Then uses Spring Boot’s Binder to bind all remaining properties into the instance, including:
-
-maximum-pool-size (Hikari)
-
-initialSize (Tomcat)
-
-defaultAutoCommit, etc.
-
-✅ No hardcoding ✅ Still uses standard Spring Boot property style ✅ Works with any connection pool on the classpath
-
-🚀 Optional improvement
-If type isn’t given, you can infer it from Spring Boot’s classpath preference. Here's how to get the default from EmbeddedDatabaseConnection or classpath:
-
-java
-Copy
-Edit
-private Class<? extends DataSource> detectDefaultDataSourceType() {
-    try {
-        Class.forName("com.zaxxer.hikari.HikariDataSource");
-        return (Class<? extends DataSource>) Class.forName("com.zaxxer.hikari.HikariDataSource");
-    } catch (ClassNotFoundException e) {
+    private Class<? extends DataSource> detectDefaultDataSourceType() throws ClassNotFoundException {
         try {
-            Class.forName("org.apache.tomcat.jdbc.pool.DataSource");
-            return (Class<? extends DataSource>) Class.forName("org.apache.tomcat.jdbc.pool.DataSource");
-        } catch (ClassNotFoundException ex) {
-            // fallback to DBCP2 or throw
+            return (Class<? extends DataSource>) Class.forName("com.zaxxer.hikari.HikariDataSource");
+        } catch (ClassNotFoundException e) {
+            try {
+                return (Class<? extends DataSource>) Class.forName("org.apache.tomcat.jdbc.pool.DataSource");
+            } catch (ClassNotFoundException ex) {
+                return (Class<? extends DataSource>) Class.forName("org.apache.commons.dbcp2.BasicDataSource");
+            }
         }
     }
-    throw new IllegalStateException("No known DataSource implementation found on classpath");
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-
-import java.util.HashMap;
-import java.util.Map;
-
-import com.zaxxer.hikari.HikariDataSource;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
-import org.springframework.boot.context.properties.bind.Bindable;
-import org.springframework.boot.context.properties.bind.Binder;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.Environment;
-
-import javax.sql.DataSource;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
-
-@Configuration
-public class DataSourceConfig {
-
-    private static final String ROOT_PREFIX = "spring.datasource";
-
-    @Bean
-    public Map<String, DataSource> dataSources(Environment environment) {
-        Binder binder = Binder.get(environment);
-
-        // Get all child property names under spring.datasource.*
-        Set<String> dataSourceKeys = binder.bind(ROOT_PREFIX, Bindable.mapOf(String.class, Object.class))
-                                           .orElse(new HashMap<>())
-                                           .keySet();
-
-        Map<String, DataSource> result = new HashMap<>();
-
-        for (String key : dataSourceKeys) {
-            String prefix = ROOT_PREFIX + "." + key;
-
-            // Bind to DataSourceProperties
-            DataSourceProperties props = binder.bind(prefix, Bindable.of(DataSourceProperties.class))
-                                               .orElseThrow(() -> new IllegalArgumentException("Invalid config for: " + key));
-
-            // Build HikariDataSource
-            HikariDataSource ds = props.initializeDataSourceBuilder()
-                                       .type(HikariDataSource.class)
-                                       .build();
-
-            // Optionally bind Hikari-specific props
-            binder.bind(prefix + ".hikari", Bindable.ofInstance(ds));
-
-            result.put(key, ds);
-        }
-
-        return result;
-    }
-}
-
-
-
-
-
-
-
-
-mport com.zaxxer.hikari.HikariDataSource;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.context.properties.bind.Bindable;
-import org.springframework.boot.context.properties.bind.Binder;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.ConfigurableEnvironment;
-
-import javax.sql.DataSource;
-import java.util.HashMap;
-import java.util.Map;
-
-@Configuration
-@EnableConfigurationProperties(MultipleDataSourceProperties.class)
-public class DataSourceConfig {
-
-    @Autowired
-    private ConfigurableEnvironment environment;
-
-    @Bean
-    public Map<String, DataSource> dataSources(MultipleDataSourceProperties multipleProps) {
-        Map<String, DataSource> dataSourceMap = new HashMap<>();
-
-        multipleProps.getDataSources().forEach((name, props) -> {
-            // Create HikariDataSource from base props
-            HikariDataSource ds = props.initializeDataSourceBuilder()
-                                      .type(HikariDataSource.class)
-                                      .build();
-
-            // Bind Hikari-specific config
-            String prefix = "spring.datasource." + name + ".hikari";
-            Binder.get(environment).bind(prefix, Bindable.ofInstance(ds));
-
-            dataSourceMap.put(name, ds);
-        });
-
-        return dataSourceMap;
-    }
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import com.zaxxer.hikari.HikariDataSource;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.context.properties.bind.Bindable;
-import org.springframework.boot.context.properties.bind.Binder;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.ConfigurableEnvironment;
-
-import javax.sql.DataSource;
-import java.util.HashMap;
-import java.util.Map;
-
-@Configuration
-@EnableConfigurationProperties(DataSourceConfig.MultipleDataSourceProperties.class)
-public class DataSourceConfig {
-
-    private final ConfigurableEnvironment environment;
-
-    public DataSourceConfig(ConfigurableEnvironment environment) {
-        this.environment = environment;
-    }
-
-    @Bean
-    public Map<String, DataSource> dataSources(MultipleDataSourceProperties multipleProps) {
-        Map<String, DataSource> dataSourceMap = new HashMap<>();
-
-        multipleProps.getDataSources().forEach((name, props) -> {
-            // Create HikariDataSource from basic properties
-            HikariDataSource ds = props.initializeDataSourceBuilder()
-                                      .type(HikariDataSource.class)
-                                      .build();
-
-            // Bind Hikari-specific properties
-            String prefix = "spring.datasource." + name + ".hikari";
-            Binder.get(environment).bind(prefix, Bindable.ofInstance(ds));
-
-            dataSourceMap.put(name, ds);
-        });
-
-        return dataSourceMap;
-    }
-
-    @ConfigurationProperties(prefix = "spring.datasource")
-    public static class MultipleDataSourceProperties {
-
-        private Map<String, DataSourceProperties> dataSources = new HashMap<>();
-
-        public Map<String, DataSourceProperties> getDataSources() {
-            return dataSources;
-        }
-
-        public void setDataSources(Map<String, DataSourceProperties> dataSources) {
-            this.dataSources = dataSources;
-        }
-    }
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-@Autowired
-private Map<String, DataSource> dataSources;
-
-public void test() {
-    DataSource ds1 = dataSources.get("one");
-    DataSource ds2 = dataSources.get("two");
-    // Use these in JdbcTemplate, JPA, etc.
 }
