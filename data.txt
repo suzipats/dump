@@ -1,4 +1,4 @@
-import org.springframework.beans.factory.support.BeanDefinitionBuilder;
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.beans.factory.support.BeanDefinitionRegistryPostProcessor;
 import org.springframework.boot.context.properties.bind.Binder;
@@ -15,6 +15,7 @@ import java.util.Map;
 public class DynamicDataSourceRegistrar implements BeanDefinitionRegistryPostProcessor {
 
     private final Environment environment;
+    private final Map<String, DataSource> allDataSources = new HashMap<>();
 
     public DynamicDataSourceRegistrar(Environment environment) {
         this.environment = environment;
@@ -25,15 +26,14 @@ public class DynamicDataSourceRegistrar implements BeanDefinitionRegistryPostPro
         Binder binder = Binder.get(environment);
         String PREFIX = "custom.datasources";
 
-        Map<String, Object> raw =
-                binder.bind(PREFIX, Bindable.mapOf(String.class, Object.class))
-                      .orElseThrow();
-
-        Map<String, DataSource> allDataSources = new HashMap<>();
+        Map<String, Object> raw = binder.bind(PREFIX, Bindable.mapOf(String.class, Object.class))
+                                        .orElseThrow();
 
         for (String key : raw.keySet()) {
             String dsPrefix = PREFIX + "." + key;
-            Map<String, String> props = binder.bind(dsPrefix, Bindable.mapOf(String.class, String.class)).orElseThrow();
+
+            Map<String, String> props = binder.bind(dsPrefix, Bindable.mapOf(String.class, String.class))
+                                              .orElseThrow();
 
             String url = props.get("url");
             String username = props.get("username");
@@ -54,36 +54,26 @@ public class DynamicDataSourceRegistrar implements BeanDefinitionRegistryPostPro
                         .type(dsType)
                         .build();
 
-                // Bind impl-specific props
+                // Bind vendor-specific properties
                 binder.bind(dsPrefix, Bindable.ofInstance(ds));
 
-                String beanName = "dataSource_" + key;
-
-                // Register each datasource bean individually with destroy method
-                BeanDefinitionBuilder beanDefBuilder = BeanDefinitionBuilder
-                        .genericBeanDefinition(ds.getClass(), () -> ds)
-                        .setDestroyMethodName("close");
-
-                registry.registerBeanDefinition(beanName, beanDefBuilder.getBeanDefinition());
-
-                // Put into map
                 allDataSources.put(key, ds);
-
             } catch (Exception e) {
                 throw new RuntimeException("Failed to register datasource: " + key, e);
             }
         }
-
-        // Register DataSourceProvider with the Map
-        BeanDefinitionBuilder providerBuilder = BeanDefinitionBuilder
-                .genericBeanDefinition(DataSourceProvider.class, () -> new DataSourceProvider(allDataSources));
-
-        registry.registerBeanDefinition("dataSourceProvider", providerBuilder.getBeanDefinition());
     }
 
     @Override
-    public void postProcessBeanFactory(org.springframework.beans.factory.config.ConfigurableListableBeanFactory ignored) {
-        // no-op
+    public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) {
+        // Register each DataSource as a singleton bean
+        for (Map.Entry<String, DataSource> entry : allDataSources.entrySet()) {
+            String beanName = "dataSource_" + entry.getKey();
+            beanFactory.registerSingleton(beanName, entry.getValue());
+        }
+
+        // Register the provider bean with the full map
+        beanFactory.registerSingleton("dataSourceProvider", new DataSourceProvider(allDataSources));
     }
 
     @SuppressWarnings("unchecked")
