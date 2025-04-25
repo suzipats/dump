@@ -1,13 +1,14 @@
 import org.springframework.beans.factory.support.BeanDefinitionBuilder;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.beans.factory.support.BeanDefinitionRegistryPostProcessor;
-import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 
 import javax.sql.DataSource;
+import java.util.HashMap;
 import java.util.Map;
 
 @Configuration
@@ -24,11 +25,13 @@ public class DynamicDataSourceRegistrar implements BeanDefinitionRegistryPostPro
         Binder binder = Binder.get(environment);
         String PREFIX = "custom.datasources";
 
-        Map<String, Object> dataSources =
+        Map<String, Object> raw =
                 binder.bind(PREFIX, Bindable.mapOf(String.class, Object.class))
                       .orElseThrow();
 
-        for (String key : dataSources.keySet()) {
+        Map<String, DataSource> allDataSources = new HashMap<>();
+
+        for (String key : raw.keySet()) {
             String dsPrefix = PREFIX + "." + key;
             Map<String, String> props = binder.bind(dsPrefix, Bindable.mapOf(String.class, String.class)).orElseThrow();
 
@@ -51,20 +54,31 @@ public class DynamicDataSourceRegistrar implements BeanDefinitionRegistryPostPro
                         .type(dsType)
                         .build();
 
-                // Bind impl-specific properties
+                // Bind impl-specific props
                 binder.bind(dsPrefix, Bindable.ofInstance(ds));
 
-                // Register bean definition with destroyMethod = "close"
+                String beanName = "dataSource_" + key;
+
+                // Register each datasource bean individually with destroy method
                 BeanDefinitionBuilder beanDefBuilder = BeanDefinitionBuilder
                         .genericBeanDefinition(ds.getClass(), () -> ds)
                         .setDestroyMethodName("close");
 
-                registry.registerBeanDefinition("dataSource_" + key, beanDefBuilder.getBeanDefinition());
+                registry.registerBeanDefinition(beanName, beanDefBuilder.getBeanDefinition());
+
+                // Put into map
+                allDataSources.put(key, ds);
 
             } catch (Exception e) {
                 throw new RuntimeException("Failed to register datasource: " + key, e);
             }
         }
+
+        // Register DataSourceProvider with the Map
+        BeanDefinitionBuilder providerBuilder = BeanDefinitionBuilder
+                .genericBeanDefinition(DataSourceProvider.class, () -> new DataSourceProvider(allDataSources));
+
+        registry.registerBeanDefinition("dataSourceProvider", providerBuilder.getBeanDefinition());
     }
 
     @Override
@@ -72,6 +86,7 @@ public class DynamicDataSourceRegistrar implements BeanDefinitionRegistryPostPro
         // no-op
     }
 
+    @SuppressWarnings("unchecked")
     private Class<? extends DataSource> detectDefaultDataSourceType() throws ClassNotFoundException {
         try {
             return (Class<? extends DataSource>) Class.forName("com.zaxxer.hikari.HikariDataSource");
