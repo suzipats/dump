@@ -1,20 +1,8 @@
 package com.example.mqlibrary;
 
-import jakarta.jms.*;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.jms.annotation.JmsListener;
-import org.springframework.jms.config.DefaultJmsListenerContainerFactory;
-import org.springframework.jms.core.JmsTemplate;
-import org.springframework.jms.connection.CachingConnectionFactory;
-import org.springframework.util.ErrorHandler;
-import com.ibm.mq.jms.MQConnectionFactory;
-import com.ibm.msg.client.wmq.WMQConstants;
 
-// 1. MQ Properties Class
-@ConfigurationProperties(prefix = "mq")
+@ConfigurationProperties
 public class MQProperties {
     private String queueManager;
     private String channel;
@@ -22,7 +10,6 @@ public class MQProperties {
     private String user;
     private String password;
 
-    // Getters and Setters
     public String getQueueManager() { return queueManager; }
     public void setQueueManager(String queueManager) { this.queueManager = queueManager; }
 
@@ -39,118 +26,258 @@ public class MQProperties {
     public void setPassword(String password) { this.password = password; }
 }
 
-// 2. MQ Configuration Class
-@Configuration
-public class MQConfiguration {
 
-    @Bean
-    public MQProperties mqProperties() {
-        return new MQProperties();
-    }
 
-    @Bean
-    public ConnectionFactory connectionFactory(MQProperties props) throws JMSException {
-        MQConnectionFactory factory = new MQConnectionFactory();
-        factory.setQueueManager(props.getQueueManager());
-        factory.setChannel(props.getChannel());
-        factory.setConnectionNameList(props.getConnName());
-        factory.setTransportType(WMQConstants.WMQ_CM_CLIENT);
-        factory.setStringProperty(WMQConstants.USERID, props.getUser());
-        factory.setStringProperty(WMQConstants.PASSWORD, props.getPassword());
 
-        // Enable automatic reconnection
-        factory.setBooleanProperty(WMQConstants.CLIENT_RECONNECT_OPTIONS, WMQConstants.WMQ_CLIENT_RECONNECT);
-        factory.setIntProperty(WMQConstants.CLIENT_RECONNECT_TIMEOUT, 30); // seconds
 
-        // Add ExceptionListener to handle connection-level issues
-        factory.setExceptionListener(exception -> {
-            System.err.println("MQ Connection-level exception: " + exception.getMessage());
-            // Integrate with logging or alerting system here
-        });
 
-        return new CachingConnectionFactory(factory);
-    }
 
-    @Bean
-    public JmsTemplate jmsTemplate(ConnectionFactory connectionFactory) {
-        return new JmsTemplate(connectionFactory);
-    }
 
-    @Bean
-    public DefaultJmsListenerContainerFactory jmsListenerContainerFactory(ConnectionFactory connectionFactory) {
-        DefaultJmsListenerContainerFactory factory = new DefaultJmsListenerContainerFactory();
-        factory.setConnectionFactory(connectionFactory);
-        factory.setConcurrency("3-10");
-        factory.setSessionAcknowledgeMode(Session.AUTO_ACKNOWLEDGE);
 
-        // Add error handler for disconnected sessions
-        factory.setErrorHandler(new ErrorHandler() {
-            @Override
-            public void handleError(Throwable t) {
-                System.err.println("JMS Listener error: " + t.getMessage());
-                // Integrate with logging or alerting system here
-            }
-        });
+package com.example.mqlibrary;
 
-        return factory;
-    }
-}
+import jakarta.jms.*;
+import org.springframework.jms.connection.CachingConnectionFactory;
+import org.springframework.jms.core.JmsTemplate;
+import com.ibm.mq.jms.MQConnectionFactory;
+import com.ibm.msg.client.wmq.WMQConstants;
 
-// 3. MQPublisherComponent
 public class MQPublisherComponent {
 
-    private final JmsTemplate jmsTemplate;
+    private final MQProperties properties;
+    private JmsTemplate jmsTemplate;
 
-    public MQPublisherComponent(JmsTemplate jmsTemplate) {
-        this.jmsTemplate = jmsTemplate;
+    public MQPublisherComponent(MQProperties properties) {
+        this.properties = properties;
+    }
+
+    public void doInitialize() throws JMSException {
+        MQConnectionFactory factory = new MQConnectionFactory();
+        factory.setQueueManager(properties.getQueueManager());
+        factory.setChannel(properties.getChannel());
+        factory.setConnectionNameList(properties.getConnName());
+        factory.setTransportType(WMQConstants.WMQ_CM_CLIENT);
+        factory.setStringProperty(WMQConstants.USERID, properties.getUser());
+        factory.setStringProperty(WMQConstants.PASSWORD, properties.getPassword());
+        factory.setBooleanProperty(WMQConstants.CLIENT_RECONNECT_OPTIONS, WMQConstants.WMQ_CLIENT_RECONNECT);
+        factory.setIntProperty(WMQConstants.CLIENT_RECONNECT_TIMEOUT, 30);
+
+        CachingConnectionFactory cachingFactory = new CachingConnectionFactory(factory);
+        this.jmsTemplate = new JmsTemplate(cachingFactory);
+
+        // Validate connection
+        try (Connection connection = cachingFactory.createConnection()) {
+            connection.start();
+            System.out.println("✅ Publisher MQ connection initialized successfully.");
+        }
     }
 
     public void publish(String destination, String message) {
+        if (jmsTemplate == null) {
+            throw new IllegalStateException("Publisher not initialized. Call doInitialize() first.");
+        }
         jmsTemplate.convertAndSend(destination, message);
     }
 }
 
-// 4. MQSubscriberComponent
+
+
+
+
+
+
+
+
+
+package com.example.mqlibrary;
+
+import jakarta.jms.*;
+import com.ibm.mq.jms.MQConnectionFactory;
+import com.ibm.msg.client.wmq.WMQConstants;
+
 public class MQSubscriberComponent {
 
     public interface MessageHandler {
         void handleMessage(String message);
     }
 
+    private final MQProperties properties;
     private final MessageHandler handler;
+    private Connection connection;
+    private Session session;
+    private MessageConsumer consumer;
 
-    public MQSubscriberComponent(MessageHandler handler) {
+    public MQSubscriberComponent(MQProperties properties, MessageHandler handler) {
+        this.properties = properties;
         this.handler = handler;
     }
 
-    @JmsListener(destination = "${mq.subscriber.destination}", containerFactory = "jmsListenerContainerFactory")
-    public void onMessage(String message) {
-        handler.handleMessage(message);
+    public void doInitialize(String queueName) throws JMSException {
+        MQConnectionFactory factory = new MQConnectionFactory();
+        factory.setQueueManager(properties.getQueueManager());
+        factory.setChannel(properties.getChannel());
+        factory.setConnectionNameList(properties.getConnName());
+        factory.setTransportType(WMQConstants.WMQ_CM_CLIENT);
+        factory.setStringProperty(WMQConstants.USERID, properties.getUser());
+        factory.setStringProperty(WMQConstants.PASSWORD, properties.getPassword());
+        factory.setBooleanProperty(WMQConstants.CLIENT_RECONNECT_OPTIONS, WMQConstants.WMQ_CLIENT_RECONNECT);
+        factory.setIntProperty(WMQConstants.CLIENT_RECONNECT_TIMEOUT, 30);
+
+        connection = factory.createConnection();
+        session = connection.createSession(false, Session.AUTO_ACKNOWLEDGE);
+        Destination destination = session.createQueue(queueName);
+        consumer = session.createConsumer(destination);
+
+        consumer.setMessageListener(message -> {
+            if (message instanceof TextMessage) {
+                try {
+                    String text = ((TextMessage) message).getText();
+                    handler.handleMessage(text);
+                } catch (JMSException e) {
+                    System.err.println("Failed to process incoming message: " + e.getMessage());
+                }
+            }
+        });
+
+        System.out.println("✅ Subscriber MQ connection initialized successfully.");
+    }
+
+    public void doStart() throws JMSException {
+        if (connection != null) {
+            connection.start();
+            System.out.println("✅ Subscriber MQ connection started.");
+        } else {
+            System.err.println("❌ Subscriber connection not initialized. Call doInitialize() first.");
+        }
+    }
+
+    public void shutdown() throws JMSException {
+        if (consumer != null) consumer.close();
+        if (session != null) session.close();
+        if (connection != null) {
+            if (connection.isStarted()) {
+                connection.stop();
+                System.out.println("✅ Subscriber MQ connection stopped.");
+            }
+            connection.close();
+        }
     }
 }
 
-// 5. Example usage in consuming application
-//@Component
-//public class MyMessageProcessor implements MQSubscriberComponent.MessageHandler {
-//    @Override
-//    public void handleMessage(String message) {
-//        System.out.println("Received: " + message);
-//    }
-//}
 
-//@SpringBootApplication
-//public class MyApp {
-//    public static void main(String[] args) {
-//        SpringApplication.run(MyApp.class, args);
-//    }
-//
-//    @Bean
-//    public MQPublisherComponent publisher(JmsTemplate jmsTemplate) {
-//        return new MQPublisherComponent(jmsTemplate);
-//    }
-//
-//    @Bean
-//    public MQSubscriberComponent subscriber(MyMessageProcessor processor) {
-//        return new MQSubscriberComponent(processor);
-//    }
-//}
+
+
+
+
+
+
+
+
+
+
+
+package com.example.client.config;
+
+import com.example.mqlibrary.MQProperties;
+import com.example.mqlibrary.MQPublisherComponent;
+import com.example.mqlibrary.MQSubscriberComponent;
+import com.example.mqlibrary.MQSubscriberComponent.MessageHandler;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+@EnableConfigurationProperties
+public class MQClientConfiguration {
+
+    @Bean(name = "mQPublishProperties")
+    @org.springframework.boot.context.properties.ConfigurationProperties(prefix = "pub")
+    public MQProperties publisherProperties() {
+        return new MQProperties();
+    }
+
+    @Bean(name = "mQSubscriberProperties")
+    @org.springframework.boot.context.properties.ConfigurationProperties(prefix = "sub")
+    public MQProperties subscriberProperties() {
+        return new MQProperties();
+    }
+
+    @Bean
+    public MQPublisherComponent mqPublisherComponent(MQProperties mQPublishProperties) throws Exception {
+        MQPublisherComponent publisher = new MQPublisherComponent(mQPublishProperties);
+        publisher.doInitialize();
+        return publisher;
+    }
+
+    @Bean
+    public MQSubscriberComponent mqSubscriberComponent(MQProperties mQSubscriberProperties) throws Exception {
+        MQSubscriberComponent subscriber = new MQSubscriberComponent(mQSubscriberProperties, new MessageHandler() {
+            @Override
+            public void handleMessage(String message) {
+                System.out.println("📥 Received message: " + message);
+            }
+        });
+        subscriber.doInitialize("MY.SUB.QUEUE");
+        return subscriber;
+    }
+}
+
+
+
+
+
+
+
+
+package com.example.client.config;
+
+import com.example.mqlibrary.MQProperties;
+import com.example.mqlibrary.MQPublisherComponent;
+import com.example.mqlibrary.MQSubscriberComponent;
+import com.example.mqlibrary.MQSubscriberComponent.MessageHandler;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+@EnableConfigurationProperties
+public class MQClientConfiguration {
+
+    @Bean(name = "mQPublishProperties")
+    @org.springframework.boot.context.properties.ConfigurationProperties(prefix = "pub")
+    public MQProperties publisherProperties() {
+        return new MQProperties();
+    }
+
+    @Bean(name = "mQSubscriberProperties")
+    @org.springframework.boot.context.properties.ConfigurationProperties(prefix = "sub")
+    public MQProperties subscriberProperties() {
+        return new MQProperties();
+    }
+
+    @Bean
+    public MQPublisherComponent mqPublisherComponent(MQProperties mQPublishProperties) throws Exception {
+        MQPublisherComponent publisher = new MQPublisherComponent(mQPublishProperties);
+        publisher.doInitialize();
+        return publisher;
+    }
+
+    @Bean
+    public MQSubscriberComponent mqSubscriberComponent(MQProperties mQSubscriberProperties) throws Exception {
+        MQSubscriberComponent subscriber = new MQSubscriberComponent(mQSubscriberProperties, new MessageHandler() {
+            @Override
+            public void handleMessage(String message) {
+                System.out.println("📥 Received message: " + message);
+            }
+        });
+        subscriber.doInitialize("MY.SUB.QUEUE");
+        return subscriber;
+    }
+}
+
+
+
+
+
+
+
