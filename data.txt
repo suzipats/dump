@@ -9,6 +9,7 @@ import org.springframework.jms.annotation.JmsListener;
 import org.springframework.jms.config.DefaultJmsListenerContainerFactory;
 import org.springframework.jms.core.JmsTemplate;
 import org.springframework.jms.connection.CachingConnectionFactory;
+import org.springframework.util.ErrorHandler;
 import com.ibm.mq.jms.MQConnectionFactory;
 import com.ibm.msg.client.wmq.WMQConstants;
 
@@ -56,6 +57,17 @@ public class MQConfiguration {
         factory.setTransportType(WMQConstants.WMQ_CM_CLIENT);
         factory.setStringProperty(WMQConstants.USERID, props.getUser());
         factory.setStringProperty(WMQConstants.PASSWORD, props.getPassword());
+
+        // Enable automatic reconnection
+        factory.setBooleanProperty(WMQConstants.CLIENT_RECONNECT_OPTIONS, WMQConstants.WMQ_CLIENT_RECONNECT);
+        factory.setIntProperty(WMQConstants.CLIENT_RECONNECT_TIMEOUT, 30); // seconds
+
+        // Add ExceptionListener to handle connection-level issues
+        factory.setExceptionListener(exception -> {
+            System.err.println("MQ Connection-level exception: " + exception.getMessage());
+            // Integrate with logging or alerting system here
+        });
+
         return new CachingConnectionFactory(factory);
     }
 
@@ -70,6 +82,16 @@ public class MQConfiguration {
         factory.setConnectionFactory(connectionFactory);
         factory.setConcurrency("3-10");
         factory.setSessionAcknowledgeMode(Session.AUTO_ACKNOWLEDGE);
+
+        // Add error handler for disconnected sessions
+        factory.setErrorHandler(new ErrorHandler() {
+            @Override
+            public void handleError(Throwable t) {
+                System.err.println("JMS Listener error: " + t.getMessage());
+                // Integrate with logging or alerting system here
+            }
+        });
+
         return factory;
     }
 }
