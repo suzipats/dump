@@ -1,1 +1,134 @@
-logging.pattern.correlation=[traceId=%X{traceId} spanId=%X{spanId}]
+package com.example.mqlibrary;
+
+import jakarta.jms.*;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jms.annotation.JmsListener;
+import org.springframework.jms.config.DefaultJmsListenerContainerFactory;
+import org.springframework.jms.core.JmsTemplate;
+import org.springframework.jms.connection.CachingConnectionFactory;
+import com.ibm.mq.jms.MQConnectionFactory;
+import com.ibm.msg.client.wmq.WMQConstants;
+
+// 1. MQ Properties Class
+@ConfigurationProperties(prefix = "mq")
+public class MQProperties {
+    private String queueManager;
+    private String channel;
+    private String connName;
+    private String user;
+    private String password;
+
+    // Getters and Setters
+    public String getQueueManager() { return queueManager; }
+    public void setQueueManager(String queueManager) { this.queueManager = queueManager; }
+
+    public String getChannel() { return channel; }
+    public void setChannel(String channel) { this.channel = channel; }
+
+    public String getConnName() { return connName; }
+    public void setConnName(String connName) { this.connName = connName; }
+
+    public String getUser() { return user; }
+    public void setUser(String user) { this.user = user; }
+
+    public String getPassword() { return password; }
+    public void setPassword(String password) { this.password = password; }
+}
+
+// 2. MQ Configuration Class
+@Configuration
+public class MQConfiguration {
+
+    @Bean
+    public MQProperties mqProperties() {
+        return new MQProperties();
+    }
+
+    @Bean
+    public ConnectionFactory connectionFactory(MQProperties props) throws JMSException {
+        MQConnectionFactory factory = new MQConnectionFactory();
+        factory.setQueueManager(props.getQueueManager());
+        factory.setChannel(props.getChannel());
+        factory.setConnectionNameList(props.getConnName());
+        factory.setTransportType(WMQConstants.WMQ_CM_CLIENT);
+        factory.setStringProperty(WMQConstants.USERID, props.getUser());
+        factory.setStringProperty(WMQConstants.PASSWORD, props.getPassword());
+        return new CachingConnectionFactory(factory);
+    }
+
+    @Bean
+    public JmsTemplate jmsTemplate(ConnectionFactory connectionFactory) {
+        return new JmsTemplate(connectionFactory);
+    }
+
+    @Bean
+    public DefaultJmsListenerContainerFactory jmsListenerContainerFactory(ConnectionFactory connectionFactory) {
+        DefaultJmsListenerContainerFactory factory = new DefaultJmsListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory);
+        factory.setConcurrency("3-10");
+        factory.setSessionAcknowledgeMode(Session.AUTO_ACKNOWLEDGE);
+        return factory;
+    }
+}
+
+// 3. MQPublisherComponent
+public class MQPublisherComponent {
+
+    private final JmsTemplate jmsTemplate;
+
+    public MQPublisherComponent(JmsTemplate jmsTemplate) {
+        this.jmsTemplate = jmsTemplate;
+    }
+
+    public void publish(String destination, String message) {
+        jmsTemplate.convertAndSend(destination, message);
+    }
+}
+
+// 4. MQSubscriberComponent
+public class MQSubscriberComponent {
+
+    public interface MessageHandler {
+        void handleMessage(String message);
+    }
+
+    private final MessageHandler handler;
+
+    public MQSubscriberComponent(MessageHandler handler) {
+        this.handler = handler;
+    }
+
+    @JmsListener(destination = "${mq.subscriber.destination}", containerFactory = "jmsListenerContainerFactory")
+    public void onMessage(String message) {
+        handler.handleMessage(message);
+    }
+}
+
+// 5. Example usage in consuming application
+//@Component
+//public class MyMessageProcessor implements MQSubscriberComponent.MessageHandler {
+//    @Override
+//    public void handleMessage(String message) {
+//        System.out.println("Received: " + message);
+//    }
+//}
+
+//@SpringBootApplication
+//public class MyApp {
+//    public static void main(String[] args) {
+//        SpringApplication.run(MyApp.class, args);
+//    }
+//
+//    @Bean
+//    public MQPublisherComponent publisher(JmsTemplate jmsTemplate) {
+//        return new MQPublisherComponent(jmsTemplate);
+//    }
+//
+//    @Bean
+//    public MQSubscriberComponent subscriber(MyMessageProcessor processor) {
+//        return new MQSubscriberComponent(processor);
+//    }
+//}
