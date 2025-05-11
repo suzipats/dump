@@ -278,6 +278,24 @@ public class MQClientConfiguration {
 
 
 
+        MQMessageMetadata metadata = new MQMessageMetadata();
+        metadata.setMessageId(message.getJMSMessageID());
+        metadata.setCorrelationId(message.getJMSCorrelationID());
+        metadata.setDestination(message.getJMSDestination());
+        metadata.setTimestamp(message.getJMSTimestamp());
+        metadata.setRedelivered(message.getJMSRedelivered());
+
+
+        Enumeration<?> propertyNames = message.getPropertyNames();
+        while (propertyNames.hasMoreElements()) {
+            String name = (String) propertyNames.nextElement();
+            Object value = message.getObjectProperty(name);
+            metadata.getCustomProperties().put(name, value);
+        }
+
+        System.out.println("📄 Metadata: " + metadata);
+
+
 
 
 
