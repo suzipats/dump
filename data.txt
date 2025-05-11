@@ -297,5 +297,16 @@ public class MQClientConfiguration {
 
 
 
+ long length = bytesMessage.getBodyLength();
+    if (length > Integer.MAX_VALUE) {
+        throw new IllegalStateException("Message too large to handle as byte[]");
+    }
+
+    byte[] data = new byte[(int) length];
+    bytesMessage.readBytes(data);
+    
+    // Now `data` holds the message payload
+    System.out.println("📦 Received binary message, size = " + data.length + " bytes");
+
 
 
